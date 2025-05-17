@@ -317,8 +317,12 @@ def process_large_transactions(prompt):
         if total_transactions < 100:  # Se tiver menos de 100 transações, processa normalmente
             return get_chatgpt_response(prompt)
         
-        # Tamanho do lote - processa 1000 transações por vez
-        batch_size = 1000
+        # Tamanho do lote - processa 2000 transações por vez (equilibrando capacidade e velocidade)
+        batch_size = 2000
+        
+        # Calcular totais importantes para referência nas análises
+        total_cash_in_amount = sum(float(item.get('pix_amount', 0)) for item in cash_in_data)
+        total_cash_out_amount = sum(float(item.get('pix_amount', 0)) for item in cash_out_data)
         
         # Dividir as transações em lotes menores sequenciais
         cash_in_batches = [cash_in_data[i:i+batch_size] for i in range(0, len(cash_in_data), batch_size)]
@@ -332,23 +336,57 @@ def process_large_transactions(prompt):
         cash_in_analyses = []
         cash_out_analyses = []
         
+        # Instruções específicas para análise de lotes
+        analysis_instruction = """
+IMPORTANTE: Você DEVE analisar todas as transações deste lote. NÃO pule ou ignore transações devido ao volume.
+Se necessário, agrupe transações com características semelhantes, mas certifique-se de mencionar:
+1. O volume total de transações neste lote
+2. Padrões de contrapartes (nomes que se repetem)
+3. Faixas de valores (transações de valores pequenos, médios e altos)
+4. Horários atípicos
+5. Quaisquer anomalias específicas
+
+NÃO responda com "Não foi possível analisar devido ao volume elevado de transações".
+É essencial analisar TODAS as transações, mesmo que precise ser mais conciso.
+"""
+        
         # Processar cada lote de Cash In sequencialmente
         for i, batch in enumerate(cash_in_batches):
+            # Calcular estatísticas do lote para referência
+            batch_total = sum(float(item.get('pix_amount', 0)) for item in batch)
+            batch_percentage = (batch_total / total_cash_in_amount * 100) if total_cash_in_amount > 0 else 0
+            
             batch_prompt = base_prompt.replace("Cash In: []", f"Cash In: {json.dumps(batch, ensure_ascii=False)}")
-            batch_prompt += f"\n\nATENÇÃO: Este é o lote {i+1} de {len(cash_in_batches)} do Cash In. Analise todas as transações deste lote."
+            batch_prompt += f"\n\nATENÇÃO: Este é o lote {i+1} de {len(cash_in_batches)} do Cash In."
+            batch_prompt += f"\nEste lote contém {len(batch)} transações de um total de {len(cash_in_data)} ({len(batch)/len(cash_in_data)*100:.1f}%)."
+            batch_prompt += f"\nO valor total deste lote é R${batch_total:,.2f}, representando {batch_percentage:.1f}% do total de Cash In."
+            batch_prompt += analysis_instruction
+            
             batch_analysis = get_chatgpt_response(batch_prompt)
             cash_in_analyses.append(batch_analysis)
         
         # Processar cada lote de Cash Out sequencialmente
         for i, batch in enumerate(cash_out_batches):
+            # Calcular estatísticas do lote para referência
+            batch_total = sum(float(item.get('pix_amount', 0)) for item in batch)
+            batch_percentage = (batch_total / total_cash_out_amount * 100) if total_cash_out_amount > 0 else 0
+            
             batch_prompt = base_prompt.replace("Cash Out: []", f"Cash Out: {json.dumps(batch, ensure_ascii=False)}")
-            batch_prompt += f"\n\nATENÇÃO: Este é o lote {i+1} de {len(cash_out_batches)} do Cash Out. Analise todas as transações deste lote."
+            batch_prompt += f"\n\nATENÇÃO: Este é o lote {i+1} de {len(cash_out_batches)} do Cash Out."
+            batch_prompt += f"\nEste lote contém {len(batch)} transações de um total de {len(cash_out_data)} ({len(batch)/len(cash_out_data)*100:.1f}%)."
+            batch_prompt += f"\nO valor total deste lote é R${batch_total:,.2f}, representando {batch_percentage:.1f}% do total de Cash Out."
+            batch_prompt += analysis_instruction
+            
             batch_analysis = get_chatgpt_response(batch_prompt)
             cash_out_analyses.append(batch_analysis)
         
         # Preparar o prompt final para combinar todas as análises
         summary_prompt = f"""
-Você analisou vários lotes de um grande conjunto de transações para o mesmo {user_type}. 
+Você analisou todos os lotes de um grande conjunto de transações para o mesmo {user_type}.
+Total de {len(cash_in_data)} transações Cash In e {len(cash_out_data)} transações Cash Out.
+Valor total Cash In: R${total_cash_in_amount:,.2f}
+Valor total Cash Out: R${total_cash_out_amount:,.2f}
+
 Abaixo estão as análises de cada lote:
 
 INFORMAÇÕES DO {user_type.upper()}:
@@ -360,10 +398,17 @@ ANÁLISES DOS LOTES DE TRANSAÇÕES CASH IN:
 ANÁLISES DOS LOTES DE TRANSAÇÕES CASH OUT:
 {"".join([f"\n--- LOTE {i+1}/{len(cash_out_batches)} ---\n{analysis}\n" for i, analysis in enumerate(cash_out_analyses)])}
 
-Por favor, combine todas essas análises em uma análise final completa e coesa.
-Considere TODAS as transações analisadas nos diferentes lotes.
-Identifique padrões gerais, fluxos financeiros suspeitos, conexões entre diferentes partes e qualquer
-outro indicador de possível lavagem de dinheiro ou atividade suspeita.
+IMPORTANTE: Combine todas essas análises em uma análise final completa e coesa.
+Você DEVE fazer uma análise completa de Cash In e Cash Out - NÃO é permitido pular ou dizer que "não foi possível analisar devido ao volume".
+Use as informações de todas as análises parciais para criar uma visão consolidada.
+
+Identifique:
+1. Padrões recorrentes nas transações
+2. Principais destinatários/remetentes
+3. Faixas de valores e frequências
+4. Horários atípicos
+5. Conexões entre diferentes partes
+6. Qualquer indicador de possível lavagem de dinheiro ou atividade suspeita
 
 Forneça uma conclusão final com uma classificação de risco de 1 a 10 e cite as alíneas relevantes da Carta Circular 4001 do BACEN.
 """
